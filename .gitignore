@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# vdodl runtime scratch space (downloaded media + yt-dlp temp)
+/.vdodl/
