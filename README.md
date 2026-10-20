@@ -1,95 +1,169 @@
 # VDODL
 
-A small Next.js app for saving a video from a YouTube link in the quality you choose.
+**Paste a YouTube link, choose a quality, and download the video.**
 
-Paste a link → the app reads the available streams → you pick a resolution → the file downloads
-with a live progress bar and an estimated time remaining.
+VDODL is a simple web app built with Next.js, React, TypeScript, and Tailwind CSS.
+It has a black-and-white design with orange-red Submit buttons and green Download buttons.
 
-> Only download videos you own or that the rights holder allows you to download. You are
-> responsible for how you use the files you save.
+> Only download videos you own or have permission to download. Respect copyright
+> and YouTube's terms of service.
 
-## How it works
+## What can it do?
 
-1. **Submit** a YouTube watch, share or Shorts link. While the link is analyzed, a progress bar
-   shows an estimated time to completion based on how long recent analyses actually took.
-2. **Pick a quality.** The app lists one entry per resolution (plus an audio-only option) with the
-   container, codec and expected file size.
-3. **Download.** The server fetches the streams, muxes video and audio when needed, and reports
-   real byte-level progress, transfer speed and ETA over server-sent events. The finished file is
-   handed to the browser automatically, and a *Save file again* button stays available.
+- Read YouTube watch, share, and Shorts links.
+- Show an estimated waiting time while checking a video.
+- List available video qualities, file types, and file sizes.
+- Download video with sound, or download audio only.
+- Show download progress, speed, and estimated time remaining.
+- Let you cancel a download or save a completed file again.
 
-## Getting started
+Available qualities depend on the video. The app cannot improve the original quality.
 
-```bash
-npm install
-npm run dev
+## Before you start
+
+You need:
+
+- [Node.js](https://nodejs.org/) installed. Node.js 24 LTS is recommended; the minimum is 20.9.
+- An internet connection and enough free disk space for downloaded videos.
+- [Git](https://git-scm.com/downloads) if you want to copy the project using `git clone`.
+
+The commands below are for **Windows PowerShell**, including the VS Code terminal.
+On macOS or Linux, use `npm` instead of `npm.cmd`.
+
+## Run the app
+
+### 1. Open the project
+
+If you already have the project, open its folder in VS Code, then choose
+**Terminal > New Terminal**. Make sure the terminal is in the folder containing
+[package.json](./package.json).
+
+If you do not have the project yet, run these commands from the folder where you
+want to keep it:
+
+```powershell
+git clone https://github.com/ttolaaa/VDODL.git
+cd VDODL
 ```
 
-Then open http://localhost:3000.
+**Tip:** Keep the project outside OneDrive to avoid Git file-locking problems.
 
-Keep the terminal running while you use the app. Wait for Next.js to print `Ready`,
-and open the exact `Local` URL it reports (the port can change if 3000 is occupied).
-If the browser reports that it cannot connect, make sure the development server is
-still running; opening the URL alone does not start it.
+### 2. Install the required packages
 
-On Windows PowerShell, if `npm.ps1` is blocked by execution policy, run
-`npm.cmd run dev` instead of `npm run dev`. There is no need to change the
-machine's execution policy.
-
-`npm install` also fetches the two binaries the app shells out to:
-
-| Binary   | Package           | Used for                                 |
-| -------- | ----------------- | ---------------------------------------- |
-| `yt-dlp` | `youtube-dl-exec` | Reading stream metadata and downloading  |
-| `ffmpeg` | `ffmpeg-static`   | Muxing video-only and audio-only streams |
-
-To use binaries you already have installed, set `YTDLP_PATH` and/or `FFMPEG_PATH`.
-
-## Project layout
-
-```
-src/
-  app/
-    api/analyze/route.ts             POST: read a link's streams, GET: current time estimate
-    api/download/route.ts            POST: start a download job
-    api/jobs/[jobId]/route.ts        GET: job progress, DELETE: cancel
-    api/jobs/[jobId]/events/route.ts SSE progress feed
-    api/jobs/[jobId]/file/route.ts   Serves the finished file as an attachment
-    page.tsx                         Landing page
-  components/
-    Downloader.tsx                   Form, quality list and progress UI
-    ProgressBar.tsx                  Shared bar used by both progress states
-  lib/
-    jobs.ts                          Download jobs, progress parsing, cleanup
-    ytdlp.ts                         yt-dlp calls, format list, analysis cache
-    runtime.ts                       Binary + scratch directory resolution
-    youtube-url.ts                   Link validation and filename sanitising
-    format.ts                        Byte, duration and ETA formatting
+```powershell
+npm.cmd install
 ```
 
-Downloads are written to `.vdodl/jobs/<id>/` and deleted 30 minutes after the job is created.
-The whole folder is git-ignored and safe to delete at any time.
+Do this the first time you set up the project. It may take a few minutes.
+It also downloads **yt-dlp**, which reads and downloads videos, and **ffmpeg**,
+which combines video and sound. Wait until installation finishes before continuing.
 
-## Notes and limits
+### 3. Start the app
 
-- One video per request; playlist links are rejected.
-- Live streams, private and members-only videos cannot be downloaded.
-- Job state lives in the server process's memory, so the app expects to run as a single local
-  server rather than across several instances.
-- On managed Windows machines, code execution from the user temp folder is sometimes blocked,
-  which stops the yt-dlp bundle from unpacking. Child processes are therefore given a
-  project-local temp directory (`.vdodl/tmp`).
-
-## Design
-
-Monochrome layout on white. Colour is reserved for controls that trigger something: orange-red
-for *Submit* and error states, green for *Download* and download progress.
-
-## Scripts
-
-```bash
-npm run dev     # development server
-npm run build   # production build
-npm run start   # serve the production build
-npm run lint    # eslint
+```powershell
+npm.cmd run dev
 ```
+
+Wait until the terminal says `Ready`.
+
+### 4. Open it in your browser
+
+Open **http://localhost:3000**. If the terminal shows a different `Local` address,
+use that address instead.
+
+**Keep the terminal running while using the app.** Press **Ctrl+C** when you want
+to stop it. Next time, you normally only need to run `npm.cmd run dev`.
+
+## Download your first video
+
+1. Paste a YouTube video link into the input box.
+2. Click **Submit**. A progress bar and estimated waiting time appear.
+3. Wait for the video details and quality list.
+4. Click **Download** next to the quality you want. Start with a lower resolution
+   if you want a smaller file.
+5. Watch the download progress. Some qualities need an extra step to combine
+   video and sound.
+6. When ready, the browser starts saving the file. Check your browser's Downloads
+   list, or click **Save file again** if needed.
+
+Choose **Audio only** if you only want the sound. The file type is shown in the
+quality list; audio is not automatically converted to MP3.
+
+## Check that it works
+
+Use a video you own or are allowed to download.
+
+| Try this | What should happen |
+| --- | --- |
+| Leave the input empty | Submit is disabled. |
+| Submit a valid video link | Video details and available qualities appear. |
+| Download a small video quality | Progress updates and the file downloads. Play it to check picture and sound. |
+| Choose Audio only | A playable audio file downloads. |
+| Enter a non-YouTube link | A clear error message appears. |
+| Cancel an active download | The download stops and you can choose a quality again. |
+
+The analysis time is an **estimate**, not an exact countdown. A recently checked
+link can load almost immediately because its results are temporarily remembered.
+
+## Common problems
+
+### The page does not load
+
+Run `npm.cmd run dev`, wait for `Ready`, and open the `Local` address printed in
+the terminal. Opening a browser address does not start the server.
+
+### PowerShell says scripts are disabled
+
+Use `npm.cmd` instead of `npm`, as shown above. You do not need to change your
+computer's execution policy.
+
+### A video cannot be downloaded
+
+Check the error shown in the app. Live streams and videos requiring sign-in,
+such as private or members-only videos, are not supported. YouTube may also
+temporarily block requests, so even a public video is not guaranteed to work.
+
+### Git keeps asking whether to retry deleting a directory
+
+This can happen when OneDrive or another program locks Git's files. Do not
+manually delete Git's internal folders. Keeping your project outside OneDrive
+helps avoid this problem.
+
+## Other useful commands
+
+Run these from the project folder:
+
+| Command | What it does |
+| --- | --- |
+| `npm.cmd run dev` | Starts the app for local development. |
+| `npm.cmd run lint` | Checks the code for lint problems. |
+| `npm.cmd run build` | Creates the production version. |
+| `npm.cmd run start` | Runs the production version after a successful build. |
+
+To test production mode, stop the development server with **Ctrl+C**, then run
+`npm.cmd run build` followed by `npm.cmd run start`. Only continue if the build succeeds.
+
+## Important limits
+
+- One video at a time per request. Playlist-only links are not supported.
+- This version is designed to run on one computer/server, not several servers
+  sharing the same downloads.
+- Restarting the server makes existing download jobs unavailable.
+- Temporary server copies are stored in `.vdodl` and normally expire 30 minutes
+  after a job starts, while the server is running. Files already saved to your
+  own Downloads folder are not removed.
+- GitHub stores the source code; it does not run the app. This app needs a
+  running Node.js server and cannot run as a static GitHub Pages site.
+
+## Where to find the code
+
+| Location | Purpose |
+| --- | --- |
+| [src/app](./src/app) | Pages, styles, and server API routes. |
+| [src/components](./src/components) | The form, quality list, and progress bars. |
+| [src/lib](./src/lib) | Video analysis, downloading, and helper functions. |
+| [package.json](./package.json) | Dependencies and available commands. |
+
+**Advanced:** If you already have yt-dlp or ffmpeg installed, set `YTDLP_PATH` or
+`FFMPEG_PATH` to the executable's full path before starting the server. Otherwise,
+the app uses the binaries downloaded during installation.
