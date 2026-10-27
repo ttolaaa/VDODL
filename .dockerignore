@@ -1,0 +1,16 @@
+.git
+.github
+.next
+.vdodl
+node_modules
+coverage
+out
+build
+deploy
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+.env*
+Dockerfile
+compose.yaml
+.dockerignore

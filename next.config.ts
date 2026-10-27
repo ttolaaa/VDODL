@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Emits .next/standalone for the Docker image (see Dockerfile).
+  output: "standalone",
+  // The Docker image installs Linux yt-dlp/ffmpeg itself (YTDLP_PATH/FFMPEG_PATH),
+  // so don't copy the npm-provided binaries into the standalone output.
+  outputFileTracingExcludes: {
+    "/**": ["node_modules/youtube-dl-exec/bin/**", "node_modules/ffmpeg-static/ffmpeg*"],
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "i.ytimg.com" },

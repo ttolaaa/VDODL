@@ -1,169 +1,144 @@
 # VDODL
 
-**Paste a YouTube link, choose a quality, and download the video.**
+**Paste a YouTube (incl. Shorts), TikTok, or Instagram link, choose a quality (HD, Full HD, 2K, or 4K when available), and download the video.**
 
-VDODL is a simple web app built with Next.js, React, TypeScript, and Tailwind CSS.
-It has a black-and-white design with orange-red Submit buttons and green Download buttons.
+## How to use
 
-> Only download videos you own or have permission to download. Respect copyright
-> and YouTube's terms of service.
+1. **Paste your link.** Copy a public YouTube, TikTok, or Instagram link into the input box.
+2. **Click Submit.** The app checks the video and shows an estimated waiting time.
+3. **Choose a quality.** Review the available resolutions and file sizes. Rows are
+   tagged **HD** (720p), **Full HD** (1080p), **2K** (1440p), or **4K** (2160p);
+   vertical Shorts/TikTok videos are classed by their short side.
+4. **Click Download.** Use the button next to the quality you want.
+5. **Follow the progress.** The progress bar shows how much has downloaded and
+   the estimated time remaining.
+6. **Save your file.** When ready, the browser starts the download. Find the file
+   in your browser's Downloads list.
 
-## What can it do?
+### Other options
 
-- Read YouTube watch, share, and Shorts links.
-- Show an estimated waiting time while checking a video.
-- List available video qualities, file types, and file sizes.
-- Download video with sound, or download audio only.
-- Show download progress, speed, and estimated time remaining.
-- Let you cancel a download or save a completed file again.
+- **Audio only:** When listed, download just the sound using the Download button on that row.
+- **Cancel:** Stop a download that is still running.
+- **Save file again:** Download a completed file again.
+- **Analyze another link:** Start over with a different video.
 
-Available qualities depend on the video. The app cannot improve the original quality.
+## Browser-first downloads
 
-## Before you start
+The app checks links and tracks progress in your browser. When a platform allows
+it, a complete video or audio file downloads directly to your device without
+passing through the app's server.
 
-You need:
+The app still needs a server to find the available video files. It also uses the
+server if a platform blocks direct browser downloads, video and sound need to be
+combined, or a file exceeds the browser's 256 MB memory-buffer limit. The app
+shows **Browser-first** or **Server-assisted** and explains when it switches.
+It is not a fully browser-only app. YouTube and TikTok always block direct
+browser downloads (and YouTube links only work from the server's IP), so those
+always use the server.
 
-- [Node.js](https://nodejs.org/) installed. Node.js 24 LTS is recommended; the minimum is 20.9.
-- An internet connection and enough free disk space for downloaded videos.
-- [Git](https://git-scm.com/downloads) if you want to copy the project using `git clone`.
+## Start the app on your computer
 
-The commands below are for **Windows PowerShell**, including the VS Code terminal.
-On macOS or Linux, use `npm` instead of `npm.cmd`.
+Install [Node.js](https://nodejs.org/) version 20.9 or newer, then open a terminal
+in the project folder.
 
-## Run the app
-
-### 1. Open the project
-
-If you already have the project, open its folder in VS Code, then choose
-**Terminal > New Terminal**. Make sure the terminal is in the folder containing
-[package.json](./package.json).
-
-If you do not have the project yet, run these commands from the folder where you
-want to keep it:
-
-```powershell
-git clone https://github.com/ttolaaa/VDODL.git
-cd VDODL
-```
-
-**Tip:** Keep the project outside OneDrive to avoid Git file-locking problems.
-
-### 2. Install the required packages
+On Windows, run these commands one at a time. Wait for installation to finish
+successfully before starting the app:
 
 ```powershell
 npm.cmd install
-```
-
-Do this the first time you set up the project. It may take a few minutes.
-It also downloads **yt-dlp**, which reads and downloads videos, and **ffmpeg**,
-which combines video and sound. Wait until installation finishes before continuing.
-
-### 3. Start the app
-
-```powershell
 npm.cmd run dev
 ```
 
-Wait until the terminal says `Ready`.
+Wait for `Ready`, then open **http://localhost:3000**. If the terminal shows a
+different `Local` address, use that address instead.
 
-### 4. Open it in your browser
+**Keep the terminal running while using the app.** Press **Ctrl+C** to stop it.
+After the first setup, you normally only need `npm.cmd run dev` to start it again.
 
-Open **http://localhost:3000**. If the terminal shows a different `Local` address,
-use that address instead.
+On macOS or Linux, use `npm` instead of `npm.cmd`.
 
-**Keep the terminal running while using the app.** Press **Ctrl+C** when you want
-to stop it. Next time, you normally only need to run `npm.cmd run dev`.
+## Deploy with Docker Compose
 
-## Download your first video
+The server needs [Docker](https://docs.docker.com/engine/install/) with the
+Compose plugin and git. Clone over **HTTPS** (the updater has no SSH keys), then
+start everything from the project folder:
 
-1. Paste a YouTube video link into the input box.
-2. Click **Submit**. A progress bar and estimated waiting time appear.
-3. Wait for the video details and quality list.
-4. Click **Download** next to the quality you want. Start with a lower resolution
-   if you want a smaller file.
-5. Watch the download progress. Some qualities need an extra step to combine
-   video and sound.
-6. When ready, the browser starts saving the file. Check your browser's Downloads
-   list, or click **Save file again** if needed.
+```bash
+git clone https://github.com/ttolaaa/VDODL.git vdodl
+cd vdodl
+GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
+```
 
-Choose **Audio only** if you only want the sound. The file type is shown in the
-quality list; audio is not automatically converted to MP3.
+Open **http://SERVER:3000**. Downloads and temporary files are kept in the
+`vdodl-data` Docker volume.
 
-## Check that it works
+### Automatic updates
 
-Use a video you own or are allowed to download.
+Compose also starts an `updater` container. It checks the git remote every 60
+seconds, and when new commits land on the branch it:
 
-| Try this | What should happen |
-| --- | --- |
-| Leave the input empty | Submit is disabled. |
-| Submit a valid video link | Video details and available qualities appear. |
-| Download a small video quality | Progress updates and the file downloads. Play it to check picture and sound. |
-| Choose Audio only | A playable audio file downloads. |
-| Enter a non-YouTube link | A clear error message appears. |
-| Cancel an active download | The download stops and you can choose a quality again. |
+1. fast-forwards the server's checkout (`git merge --ff-only`),
+2. runs the tests and rebuilds the image (this also fetches the latest yt-dlp),
+3. replaces the running `app` container and waits until it is healthy.
 
-The analysis time is an **estimate**, not an exact countdown. A recently checked
-link can load almost immediately because its results are temporarily remembered.
+If the tests or build fail, the current version keeps running and the updater
+waits for the next commit. Watch it with `docker compose logs -f updater`.
 
-## Common problems
+Platforms (especially TikTok and Instagram) change often, so the updater also
+rebuilds every 24 hours to pull the newest yt-dlp even without a commit. If
+nothing changed, the running container is left untouched.
 
-### The page does not load
+Notes:
 
-Run `npm.cmd run dev`, wait for `Ready`, and open the `Local` address printed in
-the terminal. Opening a browser address does not start the server.
+- Treat the server checkout as deploy-only. Local edits or a force-pushed branch
+  stop fast-forwarding until you fix the checkout (e.g. `git reset --hard origin/master`).
+- The updater mounts the Docker socket, which gives it full control of Docker on
+  that host.
+- The updater does not rebuild itself. After changing `deploy/updater/`, run
+  `docker compose up -d --build updater` on the server.
+- Plain `docker compose up -d --build` also works; the updater then rebuilds
+  once to record which commit is running.
 
-### PowerShell says scripts are disabled
+Optional settings go in a `.env` file next to `compose.yaml`:
 
-Use `npm.cmd` instead of `npm`, as shown above. You do not need to change your
-computer's execution policy.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VDODL_PORT` | `3000` | Host port for the app |
+| `VDODL_BRANCH` | current branch | Branch to follow |
+| `VDODL_POLL_INTERVAL` | `60` | Seconds between git checks |
+| `VDODL_YTDLP_REFRESH_HOURS` | `24` | Hours between yt-dlp refresh rebuilds (`0` disables) |
+| `VDODL_MAX_DOWNLOAD_HOURS` | `6` | Longest a single server download may run before it is stopped |
+| `VDODL_CPUS` | `1` | CPU cores the app container may use |
+| `VDODL_MEMORY` | `1536m` | Memory the app container may use |
+| `VDODL_MAX_JOBS` | `3` | Downloads running at the same time (others get "try again") |
+| `VDODL_MAX_ANALYSES` | `3` | Links being checked at the same time |
 
-### A video cannot be downloaded
+### Server resource use
 
-Check the error shown in the app. Live streams and videos requiring sign-in,
-such as private or members-only videos, are not supported. YouTube may also
-temporarily block requests, so even a public video is not guaranteed to work.
+The server never re-encodes video and uses no GPU. Measured for a 250 MB 4K
+download: about 4 CPU-seconds in total and under 100 MB of memory per running
+download (yt-dlp ~90 MB, ffmpeg ~20 MB) on top of the ~150 MB Node.js server.
+Finished files are streamed to the browser from disk, not held in memory. The
+main costs are **network** (each file is downloaded by the server and then sent
+to the user) and **disk**. The limits above cap CPU, memory, and concurrency.
+Rebuilds after a commit (`npm ci` + `next build`) run outside these limits and
+briefly use 1–2 GB of memory.
 
-### Git keeps asking whether to retry deleting a directory
+## Please note
 
-This can happen when OneDrive or another program locks Git's files. Do not
-manually delete Git's internal folders. Keeping your project outside OneDrive
-helps avoid this problem.
-
-## Other useful commands
-
-Run these from the project folder:
-
-| Command | What it does |
-| --- | --- |
-| `npm.cmd run dev` | Starts the app for local development. |
-| `npm.cmd run lint` | Checks the code for lint problems. |
-| `npm.cmd run build` | Creates the production version. |
-| `npm.cmd run start` | Runs the production version after a successful build. |
-
-To test production mode, stop the development server with **Ctrl+C**, then run
-`npm.cmd run build` followed by `npm.cmd run start`. Only continue if the build succeeds.
-
-## Important limits
-
-- One video at a time per request. Playlist-only links are not supported.
-- This version is designed to run on one computer/server, not several servers
-  sharing the same downloads.
-- Restarting the server makes existing download jobs unavailable.
-- Temporary server copies are stored in `.vdodl` and normally expire 30 minutes
-  after a job starts, while the server is running. Files already saved to your
-  own Downloads folder are not removed.
-- GitHub stores the source code; it does not run the app. This app needs a
-  running Node.js server and cannot run as a static GitHub Pages site.
-
-## Where to find the code
-
-| Location | Purpose |
-| --- | --- |
-| [src/app](./src/app) | Pages, styles, and server API routes. |
-| [src/components](./src/components) | The form, quality list, and progress bars. |
-| [src/lib](./src/lib) | Video analysis, downloading, and helper functions. |
-| [package.json](./package.json) | Dependencies and available commands. |
-
-**Advanced:** If you already have yt-dlp or ffmpeg installed, set `YTDLP_PATH` or
-`FFMPEG_PATH` to the executable's full path before starting the server. Otherwise,
-the app uses the binaries downloaded during installation.
+- Only download videos you own or have permission to download. Respect copyright
+  and YouTube's terms of service.
+- Available qualities depend on the original video. YouTube offers 2K/4K only as
+  separate video and audio streams (VP9 or AV1), so the server merges them with
+  ffmpeg; these files can take a while and may not play on older devices.
+- YouTube watch/Shorts links, TikTok video/share links, and Instagram
+  `instagram.com/reel/...`, `/p/...` (video posts), and `/tv/...` links are supported.
+- Waiting times are estimates and depend on the video and your connection.
+- There is no limit on video length. A single server download may run for up to
+  6 hours (`VDODL_MAX_DOWNLOAD_HOURS`), and a finished file stays available for
+  30 minutes. Make sure the server has enough free disk space for long 4K videos
+  (roughly 1 GB per 10 minutes at 4K60). Files left over from a restart or
+  redeploy are deleted on the next download.
+- Live streams, playlist-only links, and videos requiring sign-in are not supported.
+- TikTok and Instagram may block automated access even to public videos. If that
+  happens, the app shows an error; it does not bypass login or access restrictions.

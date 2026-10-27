@@ -1,0 +1,43 @@
+name: vdodl
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        YTDLP_REFRESH: ${YTDLP_REFRESH:-}
+      labels:
+        vdodl.component: app
+    image: vdodl-app:latest
+    restart: unless-stopped
+    # Hard caps so the app can never take over the host. A download is mostly
+    # network and disk I/O (ffmpeg copies streams, no re-encoding, no GPU).
+    cpus: ${VDODL_CPUS:-1}
+    mem_limit: ${VDODL_MEMORY:-1536m}
+    environment:
+      VDODL_MAX_DOWNLOAD_HOURS: ${VDODL_MAX_DOWNLOAD_HOURS:-6}
+      VDODL_MAX_JOBS: ${VDODL_MAX_JOBS:-3}
+      VDODL_MAX_ANALYSES: ${VDODL_MAX_ANALYSES:-3}
+    ports:
+      - "${VDODL_PORT:-3000}:3000"
+    volumes:
+      - vdodl-data:/app/.vdodl
+
+  # Polls the git remote and rebuilds/restarts `app` when new commits land.
+  updater:
+    build: ./deploy/updater
+    image: vdodl-updater:latest
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    environment:
+      GIT_BRANCH: ${VDODL_BRANCH:-}
+      POLL_INTERVAL: ${VDODL_POLL_INTERVAL:-60}
+      YTDLP_REFRESH_HOURS: ${VDODL_YTDLP_REFRESH_HOURS:-24}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/repo
+
+volumes:
+  vdodl-data:

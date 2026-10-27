@@ -16,8 +16,8 @@ export default function Home() {
         </h1>
 
         <p className="mt-4 max-w-xl text-base text-muted">
-          Drop in a YouTube link, we read the available streams, and you pick the resolution.
-          Progress is shown the whole way through.
+          Drop in a YouTube, TikTok, or Instagram link and pick the quality, from HD up to
+          2K and 4K. Progress is shown the whole way through.
         </p>
       </header>
 
@@ -29,7 +29,7 @@ export default function Home() {
           responsible for how you use the files you save.
         </p>
         <p className="mt-2 font-mono uppercase tracking-[0.14em]">
-          VDODL · runs locally · powered by yt-dlp + ffmpeg
+          VDODL · browser-first downloads · yt-dlp + ffmpeg fallback
         </p>
       </footer>
     </main>

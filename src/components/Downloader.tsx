@@ -4,7 +4,9 @@ import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ProgressBar } from "@/components/ProgressBar";
+import { canDownloadInBrowser, downloadInBrowser } from "@/lib/browser-download";
 import { formatBytes, formatDuration, formatEta, formatSpeed } from "@/lib/format";
+import { parseMediaUrl, PLATFORM_LABELS, safeFilename } from "@/lib/media-url";
 import type { AnalyzeResponse, JobProgress, MediaFormat } from "@/lib/types";
 
 type Phase = "idle" | "analyzing" | "results";
@@ -22,11 +24,20 @@ export function Downloader() {
 
   const [job, setJob] = useState<JobProgress | null>(null);
   const [activeFormat, setActiveFormat] = useState<MediaFormat | null>(null);
+  const [transferNotice, setTransferNotice] = useState<string | null>(null);
 
   const eventsRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const savedJobRef = useRef<string | null>(null);
   const analyzeStartRef = useRef(0);
+  const requestRef = useRef<AbortController | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  const clientFileRef = useRef<{ id: string; url: string } | null>(null);
+
+  const clearClientFile = useCallback(() => {
+    if (clientFileRef.current) URL.revokeObjectURL(clientFileRef.current.url);
+    clientFileRef.current = null;
+  }, []);
 
   // Seed the countdown with how long recent analyses actually took.
   useEffect(() => {
@@ -37,7 +48,7 @@ export function Downloader() {
       .then((data) => {
         if (!cancelled && data?.estimateMs) setEstimateMs(data.estimateMs);
       })
-      .catch(() => {});
+      .catch((error) => console.warn("Could not load the analysis time estimate.", error));
 
     return () => {
       cancelled = true;
@@ -59,11 +70,20 @@ export function Downloader() {
     pollRef.current = null;
   }, []);
 
-  useEffect(() => stopWatching, [stopWatching]);
+  useEffect(() => () => {
+    stopWatching();
+    requestRef.current?.abort();
+    clearClientFile();
+    if (activeJobIdRef.current) {
+      void fetch(`/api/jobs/${activeJobIdRef.current}`, { method: "DELETE", keepalive: true })
+        .catch((error) => console.warn("Could not cancel the download on page close.", error));
+    }
+  }, [stopWatching, clearClientFile]);
 
   const saveFile = useCallback((jobId: string, filename?: string) => {
     const anchor = document.createElement("a");
-    anchor.href = `/api/jobs/${jobId}/file`;
+    anchor.href = clientFileRef.current?.id === jobId
+      ? clientFileRef.current.url : `/api/jobs/${jobId}/file`;
     if (filename) anchor.download = filename;
     document.body.appendChild(anchor);
     anchor.click();
@@ -80,6 +100,7 @@ export function Downloader() {
       }
 
       if (next.status === "ready" || next.status === "error" || next.status === "cancelled") {
+        activeJobIdRef.current = null;
         stopWatching();
       }
     },
@@ -91,14 +112,24 @@ export function Downloader() {
       stopWatching();
 
       const startPolling = () => {
-        if (pollRef.current) return;
+        if (pollRef.current || activeJobIdRef.current !== jobId) return;
         pollRef.current = setInterval(async () => {
+          if (activeJobIdRef.current !== jobId) return;
           try {
             const response = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
-            if (!response.ok) return;
-            applyProgress((await response.json()) as JobProgress);
+            if (activeJobIdRef.current !== jobId) return;
+            if (!response.ok) {
+              setError(response.status === 404
+                ? "This download is no longer available. Cancel it and try again."
+                : "Cannot read download progress. Retrying; you can still cancel.");
+              return;
+            }
+            const progress = await response.json() as JobProgress;
+            if (activeJobIdRef.current === jobId) applyProgress(progress);
           } catch {
-            // Keep polling; a transient failure should not kill the UI.
+            if (activeJobIdRef.current === jobId) {
+              setError("Connection to download progress was lost. Retrying.");
+            }
           }
         }, 700);
       };
@@ -112,10 +143,13 @@ export function Downloader() {
       eventsRef.current = source;
 
       source.onmessage = (event) => {
+        if (activeJobIdRef.current !== jobId) return;
         try {
           applyProgress(JSON.parse(event.data) as JobProgress);
         } catch {
-          // Ignore malformed frames.
+          setError("An invalid progress update was received. Reconnecting.");
+          source.close();
+          startPolling();
         }
       };
 
@@ -130,10 +164,23 @@ export function Downloader() {
 
   async function handleAnalyze(event: React.FormEvent) {
     event.preventDefault();
-    if (phase === "analyzing") return;
+    if (phase === "analyzing" || jobBusy) return;
+
+    let normalized: string;
+    try {
+      normalized = parseMediaUrl(url).normalized;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "That link is not supported.");
+      return;
+    }
 
     stopWatching();
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    clearClientFile();
     setError(null);
+    setTransferNotice(null);
     setAnalysis(null);
     setJob(null);
     setActiveFormat(null);
@@ -146,10 +193,12 @@ export function Downloader() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: normalized }),
+        signal: controller.signal,
       });
 
       const data = await response.json();
+      if (controller.signal.aborted) return;
 
       if (!response.ok) {
         setError(data?.error ?? "Could not analyze that link.");
@@ -161,17 +210,23 @@ export function Downloader() {
       setAnalysis(data as AnalyzeResponse);
       setPhase("results");
     } catch {
+      if (controller.signal.aborted) return;
       setError("The server could not be reached. Is the app still running?");
       setPhase("idle");
     }
   }
 
   async function handleDownload(format: MediaFormat) {
-    if (!analysis) return;
+    if (!analysis || jobBusy) return;
 
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    clearClientFile();
     savedJobRef.current = null;
     setActiveFormat(format);
     setError(null);
+    setTransferNotice(null);
     setJob({
       id: "pending",
       status: "queued",
@@ -179,47 +234,121 @@ export function Downloader() {
       downloadedBytes: 0,
       totalBytes: format.sizeBytes,
       label: format.kind === "audio" ? "Audio only" : format.label,
+      transferMode: canDownloadInBrowser(format) ? "browser" : "server",
     });
 
+    if (canDownloadInBrowser(format) && format.directUrl) {
+      const id = `browser-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
+      const label = format.kind === "audio" ? "Audio only" : format.label;
+      try {
+        const blob = await downloadInBrowser(format.directUrl, {
+          signal: controller.signal,
+          onProgress: (progress) => {
+            setJob({ id, status: "downloading", label, transferMode: "browser", ...progress });
+          },
+        });
+        controller.signal.throwIfAborted();
+        clientFileRef.current = { id, url: URL.createObjectURL(blob) };
+        applyProgress({
+          id,
+          status: "ready",
+          label,
+          transferMode: "browser",
+          percent: 100,
+          downloadedBytes: blob.size,
+          totalBytes: blob.size,
+          fileSizeBytes: blob.size,
+          filename: safeFilename(analysis.video.title, format.container),
+        });
+        return;
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setTransferNotice(
+          `${error instanceof Error ? error.message : "Direct browser download failed."} Switching to server assistance.`
+        );
+      }
+    } else {
+      setTransferNotice(format.needsMerge
+        ? "This quality has separate video and audio streams. The server will combine them."
+        : format.directUrl
+          ? "This file is too large to buffer in the browser, so the server will download it."
+          : "This platform does not allow direct browser downloads, so the server will fetch it.");
+    }
+
+    if (controller.signal.aborted) return;
+    setJob({
+      id: "pending",
+      status: "queued",
+      label: format.label,
+      transferMode: "server",
+      percent: 0,
+      downloadedBytes: 0,
+      totalBytes: format.sizeBytes,
+    });
     try {
       const response = await fetch("/api/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: analysis.video.webpageUrl, formatId: format.id }),
+        signal: AbortSignal.timeout(90_000),
       });
 
       const data = await response.json();
 
+      if (controller.signal.aborted) {
+        if (response.ok && data.jobId) {
+          const cancelled = await fetch(`/api/jobs/${data.jobId}`, { method: "DELETE" });
+          if (!cancelled.ok) console.warn("The pending server download could not be cancelled.");
+        }
+        return;
+      }
       if (!response.ok) {
         setJob(null);
         setError(data?.error ?? "Could not start the download.");
         return;
       }
 
+      activeJobIdRef.current = data.jobId;
       applyProgress(data.progress as JobProgress);
-      watchJob(data.jobId as string);
+      if (activeJobIdRef.current) watchJob(data.jobId as string);
     } catch {
+      if (controller.signal.aborted) return;
       setJob(null);
       setError("The download could not be started.");
     }
   }
 
   async function handleCancel() {
-    if (!job || job.id === "pending") return;
+    if (!job) return;
+    requestRef.current?.abort();
+    const serverJobId = activeJobIdRef.current;
+    activeJobIdRef.current = null;
     stopWatching();
-    await fetch(`/api/jobs/${job.id}`, { method: "DELETE" }).catch(() => {});
     setJob(null);
     setActiveFormat(null);
+    setTransferNotice(null);
+    if (serverJobId) {
+      try {
+        const response = await fetch(`/api/jobs/${serverJobId}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) throw new Error("Server cancellation failed.");
+      } catch {
+        setError("The browser stopped watching, but the server could not confirm cancellation.");
+      }
+    }
   }
 
   function handleReset() {
+    if (jobBusy) return;
     stopWatching();
+    requestRef.current?.abort();
+    clearClientFile();
     setUrl("");
     setPhase("idle");
     setAnalysis(null);
     setJob(null);
     setActiveFormat(null);
     setError(null);
+    setTransferNotice(null);
     savedJobRef.current = null;
   }
 
@@ -232,7 +361,7 @@ export function Downloader() {
     <div className="w-full space-y-10">
       <form onSubmit={handleAnalyze} className="space-y-3">
         <label htmlFor="url" className="block text-xs font-semibold uppercase tracking-[0.18em] text-muted">
-          YouTube link
+          Video link
         </label>
 
         <div className="flex flex-col gap-3 sm:flex-row">
@@ -243,15 +372,16 @@ export function Downloader() {
             inputMode="url"
             autoComplete="off"
             spellCheck={false}
+            disabled={analyzing || Boolean(jobBusy)}
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://www.youtube.com/watch?v=..."
+            placeholder="YouTube, TikTok, or Instagram URL"
             className="min-w-0 flex-1 border-2 border-ink bg-white px-4 py-3 text-base outline-none placeholder:text-neutral-400 focus:ring-4 focus:ring-ink/10"
           />
 
           <button
             type="submit"
-            disabled={analyzing || url.trim().length === 0}
+            disabled={analyzing || Boolean(jobBusy) || url.trim().length === 0}
             className="shrink-0 bg-action px-7 py-3 text-sm font-semibold uppercase tracking-[0.14em] text-white transition-colors hover:bg-action-dark disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500"
           >
             {analyzing ? "Analyzing" : "Submit"}
@@ -259,7 +389,12 @@ export function Downloader() {
         </div>
 
         <p className="text-xs text-muted">
-          Paste a watch, share or Shorts link. Playlists are ignored — one video at a time.
+          YouTube videos and Shorts, TikTok videos and share links, or Instagram Reels and
+          video posts. Up to 4K when the original has it. One public video at a time.
+        </p>
+        <p className="text-xs text-muted">
+          Browser-first downloads: files transfer directly when allowed. Link extraction,
+          blocked transfers, and video/audio merging use the server.
         </p>
       </form>
 
@@ -291,7 +426,13 @@ export function Downloader() {
 
       {analysis ? (
         <section className="space-y-6">
-          <VideoCard analysis={analysis} onReset={handleReset} />
+          <VideoCard analysis={analysis} onReset={handleReset} disabled={Boolean(jobBusy)} />
+
+          {transferNotice ? (
+            <p role="status" className="border border-line px-4 py-3 text-sm text-muted">
+              {transferNotice}
+            </p>
+          ) : null}
 
           {job ? (
             <JobPanel
@@ -328,7 +469,9 @@ export function Downloader() {
   );
 }
 
-function VideoCard({ analysis, onReset }: { analysis: AnalyzeResponse; onReset: () => void }) {
+function VideoCard({ analysis, onReset, disabled }: {
+  analysis: AnalyzeResponse; onReset: () => void; disabled: boolean;
+}) {
   const { video } = analysis;
 
   return (
@@ -350,6 +493,10 @@ function VideoCard({ analysis, onReset }: { analysis: AnalyzeResponse; onReset: 
         <h2 className="text-lg font-semibold leading-snug">{video.title}</h2>
 
         <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted">
+          <div>
+            <dt className="sr-only">Platform</dt>
+            <dd>{PLATFORM_LABELS[video.platform]}</dd>
+          </div>
           {video.uploader ? (
             <div className="flex gap-2">
               <dt className="sr-only">Channel</dt>
@@ -373,7 +520,8 @@ function VideoCard({ analysis, onReset }: { analysis: AnalyzeResponse; onReset: 
         <button
           type="button"
           onClick={onReset}
-          className="mt-4 border-2 border-ink px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-colors hover:bg-ink hover:text-white"
+          disabled={disabled}
+          className="mt-4 border-2 border-ink px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-colors hover:bg-ink hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
           Analyze another link
         </button>
@@ -398,6 +546,11 @@ function FormatRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-base font-semibold">{format.label}</span>
+          {format.quality ? (
+            <span className="bg-ink px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white">
+              {format.quality}
+            </span>
+          ) : null}
           {format.recommended ? (
             <span className="border border-ink px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]">
               Recommended
@@ -408,6 +561,9 @@ function FormatRow({
               video + audio merge
             </span>
           ) : null}
+          <span className="text-[10px] uppercase tracking-[0.12em] text-muted">
+            {canDownloadInBrowser(format) ? "Browser-first" : "Server-assisted"}
+          </span>
         </div>
 
         <p className="mt-1 text-xs text-muted">
@@ -450,7 +606,9 @@ function JobPanel({
   onSave: () => void;
 }) {
   const busy = job.status === "queued" || job.status === "downloading" || job.status === "merging";
-  const indeterminate = job.status === "queued" || (job.status === "merging" && job.percent >= 99);
+  const indeterminate = job.status === "queued" ||
+    (job.status === "merging" && job.percent >= 99) ||
+    (job.status === "downloading" && !job.totalBytes);
   const heading =
     job.status === "merging" && format?.needsMerge
       ? "Combining video and audio"
@@ -464,7 +622,8 @@ function JobPanel({
           {format ? <span className="ml-2 font-mono normal-case text-muted">{job.label}</span> : null}
         </h2>
         <span className="font-mono text-sm font-semibold">
-          {job.status === "ready" ? "100%" : `${Math.floor(job.percent)}%`}
+          {job.status === "ready" ? "100%" : job.status === "downloading" && !job.totalBytes
+            ? "Working" : `${Math.floor(job.percent)}%`}
         </span>
       </div>
 
@@ -476,6 +635,9 @@ function JobPanel({
       />
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
+        <span>{job.transferMode === "browser"
+          ? job.status === "ready" ? "Downloaded on your device" : "Downloading on your device"
+          : "Server-assisted download"}</span>
         <span className="font-mono">
           {formatBytes(job.downloadedBytes)}
           {job.totalBytes ? ` / ${formatBytes(job.totalBytes)}` : ""}
@@ -483,7 +645,9 @@ function JobPanel({
         </span>
 
         {busy && job.status === "downloading" ? (
-          <span className="font-mono">{formatEta(job.etaSeconds)} remaining</span>
+          <span className="font-mono">
+            {job.etaSeconds === undefined ? "Estimating time remaining" : `${formatEta(job.etaSeconds)} remaining`}
+          </span>
         ) : null}
       </div>
 
@@ -505,7 +669,7 @@ function JobPanel({
           </>
         ) : null}
 
-        {busy && job.id !== "pending" ? (
+        {busy ? (
           <button
             type="button"
             onClick={onCancel}

@@ -11,11 +11,15 @@ import {
   resolveYtDlpPath,
 } from "@/lib/runtime";
 import type { JobProgress, MediaFormat } from "@/lib/types";
-import { safeFilename } from "@/lib/youtube-url";
+import { parseMediaUrl, PLATFORM_LABELS, safeFilename } from "@/lib/media-url";
 import { cleanYtDlpError } from "@/lib/ytdlp";
 
+/** How long a finished file stays available for saving. */
 const JOB_TTL_MS = 30 * 60 * 1000;
-const MAX_ACTIVE_JOBS = 4;
+const MAX_DOWNLOAD_HOURS = Number(process.env.VDODL_MAX_DOWNLOAD_HOURS) > 0
+  ? Number(process.env.VDODL_MAX_DOWNLOAD_HOURS) : 6;
+const MAX_ACTIVE_JOBS = Number(process.env.VDODL_MAX_JOBS) > 0
+  ? Number(process.env.VDODL_MAX_JOBS) : 4;
 
 const DL_PREFIX = "@@DL@@";
 const PP_PREFIX = "@@PP@@";
@@ -30,15 +34,27 @@ type Job = {
   downloadName: string;
   listeners: Set<(progress: JobProgress) => void>;
   cleanupTimer?: NodeJS.Timeout;
+  deadlineTimer?: NodeJS.Timeout;
 };
 
 type JobStore = Map<string, Job>;
 
 // Next dev re-evaluates modules on edit; keep jobs on globalThis so in-flight
 // downloads survive a hot reload.
-const globalStore = globalThis as typeof globalThis & { __vdodlJobs?: JobStore };
+const globalStore = globalThis as typeof globalThis & { __vdodlJobs?: JobStore; __vdodlSwept?: boolean };
 const jobs: JobStore = globalStore.__vdodlJobs ?? new Map<string, Job>();
 globalStore.__vdodlJobs = jobs;
+
+/** Deletes job folders left behind by a previous server process (e.g. a redeploy). */
+function sweepOrphanedJobs(): void {
+  if (globalStore.__vdodlSwept) return;
+  globalStore.__vdodlSwept = true;
+  for (const entry of fs.readdirSync(/* turbopackIgnore: true */ JOBS_DIR, { withFileTypes: true })) {
+    if (entry.isDirectory() && !jobs.has(entry.name)) {
+      fs.rm(path.join(JOBS_DIR, entry.name), { recursive: true, force: true }, () => {});
+    }
+  }
+}
 
 function numberOrUndefined(value: string): number | undefined {
   if (!value || value === "NA" || value === "None") return undefined;
@@ -63,6 +79,7 @@ function removeJob(jobId: string): void {
   if (!job) return;
 
   if (job.cleanupTimer) clearTimeout(job.cleanupTimer);
+  if (job.deadlineTimer) clearTimeout(job.deadlineTimer);
   job.child?.kill();
   jobs.delete(jobId);
   fs.rm(job.dir, { recursive: true, force: true }, () => {});
@@ -79,7 +96,7 @@ function buildFormatSelector(format: MediaFormat): string {
 export function activeJobCount(): number {
   let count = 0;
   for (const job of jobs.values()) {
-    if (job.progress.status === "downloading" || job.progress.status === "queued") count += 1;
+    if (["downloading", "queued", "merging"].includes(job.progress.status)) count += 1;
   }
   return count;
 }
@@ -90,6 +107,7 @@ export function createJob(options: {
   title: string;
 }): Job {
   const { url, format, title } = options;
+  parseMediaUrl(url);
 
   if (format.needsMerge && !resolveFfmpegPath()) {
     throw new Error(
@@ -102,6 +120,7 @@ export function createJob(options: {
   }
 
   ensureRuntimeDirs();
+  sweepOrphanedJobs();
 
   const id = randomUUID();
   const dir = path.join(JOBS_DIR, id);
@@ -123,11 +142,19 @@ export function createJob(options: {
       downloadedBytes: 0,
       totalBytes: format.sizeBytes,
       label,
+      transferMode: "server",
     },
   };
 
   jobs.set(id, job);
-  scheduleCleanup(job);
+  // The 30-minute file TTL starts once the file is ready; until then only this
+  // generous cap applies, so long or 4K videos are not cut off mid-download.
+  job.deadlineTimer = setTimeout(() => {
+    if (!job.child) return;
+    failJob(job, `The download took longer than ${MAX_DOWNLOAD_HOURS} hours and was stopped.`);
+    job.child.kill();
+  }, MAX_DOWNLOAD_HOURS * 60 * 60 * 1000);
+  job.deadlineTimer.unref?.();
   startDownload(job, url, format);
 
   return job;
@@ -137,6 +164,7 @@ function startDownload(job: Job, url: string, format: MediaFormat): void {
   const ffmpegPath = resolveFfmpegPath();
 
   const args = [
+    "--ignore-config",
     "--no-playlist",
     "--no-warnings",
     "--no-call-home",
@@ -193,7 +221,7 @@ function startDownload(job: Job, url: string, format: MediaFormat): void {
     if (streamTotal) lastStreamTotal = streamTotal;
 
     const overallDownloaded = completedBytes + downloaded;
-    const overallTotal =
+    const overallTotal = format.needsMerge && !format.sizeBytes ? undefined :
       job.progress.totalBytes && job.progress.totalBytes > overallDownloaded
         ? job.progress.totalBytes
         : lastStreamTotal
@@ -263,10 +291,11 @@ function startDownload(job: Job, url: string, format: MediaFormat): void {
 
   child.on("close", (code) => {
     job.child = undefined;
-    if (job.progress.status === "cancelled") return;
+    if (job.deadlineTimer) clearTimeout(job.deadlineTimer);
+    if (job.progress.status === "cancelled" || job.progress.status === "error") return;
 
     if (code !== 0) {
-      failJob(job, cleanYtDlpError(stderrBuffer));
+      failJob(job, cleanYtDlpError(stderrBuffer, PLATFORM_LABELS[parseMediaUrl(url).platform]));
       return;
     }
 
@@ -292,6 +321,7 @@ function startDownload(job: Job, url: string, format: MediaFormat): void {
       filename: job.downloadName,
       fileSizeBytes: stats.size,
     };
+    scheduleCleanup(job);
     emit(job);
   });
 }

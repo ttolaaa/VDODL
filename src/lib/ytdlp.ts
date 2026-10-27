@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
 
+import { buildMediaFormats, type RawFormat } from "@/lib/media-formats";
+import { parseMediaUrl, PLATFORM_LABELS } from "@/lib/media-url";
 import { childEnv, resolveFfmpegPath, resolveYtDlpPath } from "@/lib/runtime";
-import type { MediaFormat, VideoSummary } from "@/lib/types";
-import { parseYouTubeUrl } from "@/lib/youtube-url";
+import type { MediaFormat, MediaPlatform, VideoSummary } from "@/lib/types";
+
+// Their CDNs reject cross-origin browser fetches (YouTube URLs are also locked to
+// the server's IP), so a direct browser attempt always fails for these.
+const SERVER_ONLY_PLATFORMS = new Set<MediaPlatform>(["youtube", "tiktok"]);
 
 export type Analysis = {
   video: VideoSummary;
@@ -10,25 +15,7 @@ export type Analysis = {
   createdAt: number;
 };
 
-type RawFormat = {
-  format_id?: string;
-  ext?: string;
-  vcodec?: string;
-  acodec?: string;
-  height?: number;
-  width?: number;
-  fps?: number;
-  tbr?: number;
-  abr?: number;
-  vbr?: number;
-  filesize?: number;
-  filesize_approx?: number;
-  format_note?: string;
-  protocol?: string;
-  language?: string;
-};
-
-type RawInfo = {
+type RawInfo = RawFormat & {
   id?: string;
   title?: string;
   uploader?: string;
@@ -39,12 +26,24 @@ type RawInfo = {
   is_live?: boolean;
   live_status?: string;
   formats?: RawFormat[];
+  entries?: unknown[];
+  availability?: string;
 };
 
 const ANALYZE_TIMEOUT_MS = 60_000;
 const ANALYSIS_TTL_MS = 15 * 60 * 1000;
+const MAX_ACTIVE_ANALYSES = Number(process.env.VDODL_MAX_ANALYSES) > 0
+  ? Number(process.env.VDODL_MAX_ANALYSES) : 4;
 
 const analysisCache = new Map<string, Analysis>();
+let activeAnalyses = 0;
+
+function pruneAnalysisCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of analysisCache) {
+    if (now - entry.createdAt > ANALYSIS_TTL_MS) analysisCache.delete(key);
+  }
+}
 
 /** Rolling window of recent analyze durations, used to predict the next one. */
 const recentDurations: number[] = [];
@@ -61,10 +60,11 @@ function recordDuration(ms: number): void {
   if (recentDurations.length > 8) recentDurations.shift();
 }
 
-function runYtDlpJson(url: string): Promise<RawInfo> {
+function runYtDlpJson(url: string, platform: string): Promise<RawInfo> {
   const bin = resolveYtDlpPath();
   const args = [
     "--dump-single-json",
+    "--ignore-config",
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
@@ -105,7 +105,7 @@ function runYtDlpJson(url: string): Promise<RawInfo> {
       clearTimeout(timer);
 
       if (code !== 0) {
-        reject(new Error(cleanYtDlpError(Buffer.concat(stderr).toString("utf8"))));
+        reject(new Error(cleanYtDlpError(Buffer.concat(stderr).toString("utf8"), platform)));
         return;
       }
 
@@ -118,7 +118,7 @@ function runYtDlpJson(url: string): Promise<RawInfo> {
   });
 }
 
-export function cleanYtDlpError(stderr: string): string {
+export function cleanYtDlpError(stderr: string, platform = "The platform"): string {
   const line = stderr
     .split(/\r?\n/)
     .map((entry) => entry.trim())
@@ -126,182 +126,91 @@ export function cleanYtDlpError(stderr: string): string {
     .pop();
 
   if (!line) {
-    return "YouTube did not return this video. Check the link and try again.";
+    return `${platform} did not return this video. Check the link and try again.`;
   }
 
   const message = line.replace(/^ERROR:\s*/, "").replace(/^\[[^\]]+\]\s*[\w-]+:\s*/, "");
 
   if (/private video/i.test(message)) return "This video is private.";
   if (/members-only/i.test(message)) return "This video is for channel members only.";
-  if (/sign in|age/i.test(message)) return "This video requires sign-in and cannot be fetched.";
+  if (/login|log in|sign.?in|age.restrict|cookies|not a bot/i.test(message)) {
+    return `${platform} requires sign-in or has blocked automated access. This app cannot download that video.`;
+  }
+  if (/429|rate.limit|too many requests/i.test(message)) {
+    return `${platform} is limiting requests. Wait a while before trying again.`;
+  }
+  if (/403|forbidden|blocked|unable to extract|failed to parse/i.test(message)) {
+    return `${platform} blocked access or changed its video page. Try another public video or update yt-dlp.`;
+  }
   if (/unavailable/i.test(message)) return "This video is unavailable.";
   if (/live event/i.test(message)) return "This is a live stream and cannot be downloaded.";
 
   return message.slice(0, 200);
 }
 
-function isUsableFormat(format: RawFormat): boolean {
-  if (!format.format_id) return false;
-  // Skip HLS/DASH manifest entries; the plain https streams are enough here.
-  return format.protocol === "https" || format.protocol === "http";
-}
-
-function bytesOf(format: RawFormat): { size?: number; approx: boolean } {
-  if (format.filesize) return { size: format.filesize, approx: false };
-  if (format.filesize_approx) return { size: format.filesize_approx, approx: true };
-  return { size: undefined, approx: true };
-}
-
-function pickBestAudio(formats: RawFormat[], preferredExt: string): RawFormat | undefined {
-  const audioOnly = formats.filter(
-    (format) => format.acodec && format.acodec !== "none" && format.vcodec === "none"
-  );
-  if (audioOnly.length === 0) return undefined;
-
-  const preferred = audioOnly.filter((format) => format.ext === preferredExt);
-  const pool = preferred.length > 0 ? preferred : audioOnly;
-
-  return pool.reduce((best, current) =>
-    (current.abr ?? current.tbr ?? 0) > (best.abr ?? best.tbr ?? 0) ? current : best
-  );
-}
-
-function buildVideoFormats(formats: RawFormat[]): MediaFormat[] {
-  const videoFormats = formats.filter(
-    (format) => format.vcodec && format.vcodec !== "none" && format.height
-  );
-
-  // Keep one entry per resolution, preferring mp4/H.264 for compatibility.
-  const bestByHeight = new Map<number, RawFormat>();
-  for (const format of videoFormats) {
-    const height = format.height as number;
-    const current = bestByHeight.get(height);
-    if (!current) {
-      bestByHeight.set(height, format);
-      continue;
-    }
-
-    const score = (candidate: RawFormat) =>
-      (candidate.ext === "mp4" ? 1_000_000 : 0) +
-      (candidate.acodec && candidate.acodec !== "none" ? 500_000 : 0) +
-      (candidate.tbr ?? candidate.vbr ?? 0);
-
-    if (score(format) > score(current)) bestByHeight.set(height, format);
-  }
-
-  const audioForMp4 = pickBestAudio(formats, "m4a");
-  const audioForWebm = pickBestAudio(formats, "webm");
-
-  const entries = [...bestByHeight.entries()]
-    .sort((a, b) => b[0] - a[0])
-    .map(([height, format]) => {
-      const isProgressive = Boolean(format.acodec && format.acodec !== "none");
-      const container = format.ext === "webm" && !isProgressive ? "webm" : "mp4";
-      const audio = container === "webm" ? audioForWebm : audioForMp4;
-
-      const video = bytesOf(format);
-      const audioBytes = isProgressive ? { size: 0, approx: false } : bytesOf(audio ?? {});
-
-      const size =
-        video.size === undefined || audioBytes.size === undefined
-          ? undefined
-          : video.size + audioBytes.size;
-
-      const codecNote = format.vcodec?.startsWith("avc")
-        ? "H.264"
-        : format.vcodec?.startsWith("vp9") || format.vcodec?.startsWith("vp09")
-          ? "VP9"
-          : format.vcodec?.startsWith("av01")
-            ? "AV1"
-            : undefined;
-
-      return {
-        id: format.format_id as string,
-        kind: "video" as const,
-        label: `${height}p${format.fps && format.fps >= 50 ? Math.round(format.fps) : ""}`,
-        container,
-        height,
-        fps: format.fps ? Math.round(format.fps) : undefined,
-        sizeBytes: size,
-        sizeIsApprox: video.approx || audioBytes.approx,
-        needsMerge: !isProgressive,
-        note: [codecNote, container.toUpperCase()].filter(Boolean).join(" · "),
-      } satisfies MediaFormat;
-    });
-
-  return entries;
-}
-
-function buildAudioFormat(formats: RawFormat[]): MediaFormat | null {
-  const best = pickBestAudio(formats, "m4a");
-  if (!best?.format_id) return null;
-
-  const { size, approx } = bytesOf(best);
-
-  return {
-    id: best.format_id,
-    kind: "audio",
-    label: "Audio only",
-    container: best.ext === "webm" ? "webm" : "m4a",
-    abr: best.abr ? Math.round(best.abr) : undefined,
-    sizeBytes: size,
-    sizeIsApprox: approx,
-    needsMerge: false,
-    note: best.abr ? `${Math.round(best.abr)} kbps` : "Best available",
-  };
-}
-
 export async function analyze(rawUrl: string, force = false): Promise<Analysis> {
-  const { normalized } = parseYouTubeUrl(rawUrl);
+  const { normalized, platform } = parseMediaUrl(rawUrl);
 
   const cached = analysisCache.get(normalized);
   if (!force && cached && Date.now() - cached.createdAt < ANALYSIS_TTL_MS) {
     return cached;
   }
 
+  // Each analysis is a separate yt-dlp process; cap them so bursts of traffic
+  // cannot exhaust the server's CPU and memory.
+  if (activeAnalyses >= MAX_ACTIVE_ANALYSES) {
+    throw new Error("The server is busy checking other links. Try again in a few seconds.");
+  }
+  activeAnalyses += 1;
   const startedAt = Date.now();
-  const info = await runYtDlpJson(normalized);
+  let info: RawInfo;
+  try {
+    info = await runYtDlpJson(normalized, PLATFORM_LABELS[platform]);
+  } finally {
+    activeAnalyses -= 1;
+  }
   recordDuration(Date.now() - startedAt);
 
+  if (info.entries) throw new Error("Paste a link to one video, not a collection.");
   if (info.is_live || info.live_status === "is_live") {
     throw new Error("This is a live stream and cannot be downloaded.");
   }
-
-  const rawFormats = (info.formats ?? []).filter(isUsableFormat);
-  if (rawFormats.length === 0) {
-    throw new Error("No downloadable streams were found for this video.");
+  if (["private", "needs_auth", "subscriber_only", "premium_only"].includes(info.availability ?? "")) {
+    throw new Error("This video requires sign-in and cannot be downloaded.");
   }
 
-  const videoFormats = buildVideoFormats(rawFormats);
-  const audioFormat = buildAudioFormat(rawFormats);
-
-  const preferred =
-    videoFormats.find((format) => format.height === 1080) ??
-    videoFormats.find((format) => format.height === 720) ??
-    videoFormats[0];
-  if (preferred) preferred.recommended = true;
-
-  const formats = [...videoFormats, ...(audioFormat ? [audioFormat] : [])];
+  const rawFormats = info.formats?.length
+    ? info.formats
+    : info.url ? [{ ...info, format_id: info.format_id ?? "best" }] : [];
+  const formats = buildMediaFormats(rawFormats);
+  if (SERVER_ONLY_PLATFORMS.has(platform)) {
+    for (const format of formats) delete format.directUrl;
+  }
+  if (formats.length === 0) {
+    throw new Error("No downloadable streams were found for this video.");
+  }
 
   const analysis: Analysis = {
     video: {
       id: info.id ?? "",
+      platform,
       title: info.title?.trim() || "Untitled video",
       uploader: info.uploader ?? info.channel,
       durationSeconds: info.duration,
       thumbnail: info.thumbnail,
-      webpageUrl: info.webpage_url ?? normalized,
+      webpageUrl: normalized,
     },
     formats,
     createdAt: Date.now(),
   };
 
+  pruneAnalysisCache();
   analysisCache.set(normalized, analysis);
   return analysis;
 }
 
 export function getCachedAnalysis(rawUrl: string): Analysis | null {
-  const { normalized } = parseYouTubeUrl(rawUrl);
+  const { normalized } = parseMediaUrl(rawUrl);
   const cached = analysisCache.get(normalized);
   if (!cached) return null;
   if (Date.now() - cached.createdAt > ANALYSIS_TTL_MS) {

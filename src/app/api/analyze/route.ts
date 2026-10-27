@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   }
 
   if (typeof url !== "string") {
-    return NextResponse.json({ error: "Paste a YouTube link to get started." }, { status: 400 });
+    return NextResponse.json({ error: "Paste a YouTube, TikTok, or Instagram link." }, { status: 400 });
   }
 
   const startedAt = Date.now();
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       formats: analysis.formats,
       elapsedMs: Date.now() - startedAt,
       estimateMs: getAnalyzeEstimateMs(),
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not analyze that link.";
     return NextResponse.json({ error: message }, { status: 422 });

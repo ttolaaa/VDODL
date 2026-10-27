@@ -1,4 +1,5 @@
 export type MediaKind = "video" | "audio";
+export type MediaPlatform = "youtube" | "tiktok" | "instagram";
 
 export type MediaFormat = {
   /** yt-dlp format id used to start the download. */
@@ -9,6 +10,8 @@ export type MediaFormat = {
   /** Container the finished file will use. */
   container: string;
   height?: number;
+  /** Quality class such as "HD", "Full HD", "2K", or "4K". */
+  quality?: string;
   fps?: number;
   /** Audio bitrate in kbps, for audio-only entries. */
   abr?: number;
@@ -16,12 +19,15 @@ export type MediaFormat = {
   sizeIsApprox: boolean;
   /** True when video and audio are separate streams and must be muxed. */
   needsMerge: boolean;
+  /** A complete media file the browser may fetch directly if the CDN permits CORS. */
+  directUrl?: string;
   note?: string;
   recommended?: boolean;
 };
 
 export type VideoSummary = {
   id: string;
+  platform: MediaPlatform;
   title: string;
   uploader?: string;
   durationSeconds?: number;
@@ -58,4 +64,5 @@ export type JobProgress = {
   fileSizeBytes?: number;
   error?: string;
   label: string;
+  transferMode?: "browser" | "server";
 };

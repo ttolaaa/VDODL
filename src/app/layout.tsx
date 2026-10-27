@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "VDODL · Download a video in the quality you want",
   description:
-    "Paste a YouTube link, pick a quality, and follow the download with a live progress bar.",
+    "Download public YouTube, TikTok, and Instagram videos in HD, 2K, or 4K with browser-first transfers and live progress.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
