@@ -4,23 +4,38 @@
 
 ## How to use
 
-1. **Paste your link.** Copy a public YouTube, TikTok, or Instagram link into the input box.
-2. **Click Submit.** The app checks the video and shows an estimated waiting time.
-3. **Choose a quality.** Review the available resolutions and file sizes. Rows are
-   tagged **HD** (720p), **Full HD** (1080p), **2K** (1440p), or **4K** (2160p);
-   vertical Shorts/TikTok videos are classed by their short side.
-4. **Click Download.** Use the button next to the quality you want.
-5. **Follow the progress.** The progress bar shows how much has downloaded and
-   the estimated time remaining.
-6. **Save your file.** When ready, the browser starts the download. Find the file
-   in your browser's Downloads list.
+### 1. Paste a link and click Submit
 
-### Other options
+Copy a public YouTube (video or Shorts), TikTok, or Instagram link into the
+**Video link** box and click **Submit**. The app checks the video, which usually
+takes a few seconds.
 
-- **Audio only:** When listed, download just the sound using the Download button on that row.
-- **Cancel:** Stop a download that is still running.
-- **Save file again:** Download a completed file again.
-- **Analyze another link:** Start over with a different video.
+![Paste a video link and click Submit](docs/screenshots/1-paste-link.png)
+
+### 2. Choose a quality and click Download
+
+You'll see the video's title, channel, and length, plus every available quality
+with its file size. Rows are tagged **HD** (720p), **Full HD** (1080p), **2K**
+(1440p), or **4K** (2160p); vertical Shorts/TikTok videos are classed by their
+short side. **Recommended** marks a good default (usually 1080p). Pick
+**Audio only** at the bottom if you just want the sound.
+
+![Choose a quality: 4K, 2K, Full HD, HD, or audio only](docs/screenshots/2-choose-quality.png)
+
+### 3. Follow the progress
+
+The progress bar shows how much has downloaded, the speed, and the estimated
+time remaining. Click **Cancel** to stop.
+
+![Download progress with speed and time remaining](docs/screenshots/3-progress.png)
+
+### 4. Save your file
+
+When it reaches 100%, the browser saves the file automatically. Find it in your
+browser's Downloads list. Click **Save file again** to save another copy (the file
+stays available for 30 minutes), or **Analyze another link** to start over.
+
+![Ready to save](docs/screenshots/4-ready.png)
 
 ## Browser-first downloads
 
